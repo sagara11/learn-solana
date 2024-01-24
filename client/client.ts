@@ -13,10 +13,10 @@ const {
 } = require("@solana/web3.js");
 
 const intitialize = async () => {
-  const connection = new Connection("http://127.0.0.1:8899");
+  const connection = new Connection("http://127.0.0.1:8899", "confirmed");
   const slot = await connection.getSlot();
   let lastestBlockHash = await connection
-    .getLatestBlockhash()
+    .getLatestBlockhash("processed")
     .then((res) => res.blockhash);
 
   let minRent = await connection.getMinimumBalanceForRentExemption(0);
@@ -41,13 +41,20 @@ const intitialize = async () => {
   return { connection, slot, lastestBlockHash, payer, toAccount, minRent };
 };
 
-const creat_ALUT = async (payer, slot, connection) => {
+const creat_extend_ALUT = async (payer, toAccount, slot, connection) => {
   const [lookupTableInst, lookupTableAddress] =
     AddressLookupTableProgram.createLookupTable({
       authority: payer.publicKey,
       payer: payer.publicKey,
       recentSlot: slot - 1,
     });
+
+  const extendInstruction = AddressLookupTableProgram.extendLookupTable({
+    payer: payer.publicKey,
+    authority: payer.publicKey,
+    lookupTable: lookupTableAddress,
+    addresses: [payer.publicKey, SystemProgram.programId, toAccount.publicKey],
+  });
 
   let lastestBlockHash = await connection
     .getLatestBlockhash()
@@ -58,7 +65,7 @@ const creat_ALUT = async (payer, slot, connection) => {
   const messageV0 = new TransactionMessage({
     payerKey: payer.publicKey,
     recentBlockhash: lastestBlockHash,
-    instructions: [lookupTableInst],
+    instructions: [lookupTableInst, extendInstruction],
   }).compileToV0Message();
 
   const transaction = new VersionedTransaction(messageV0);
@@ -72,39 +79,6 @@ const creat_ALUT = async (payer, slot, connection) => {
   });
 
   return { lookupTableAddress };
-};
-
-const extend_lookup_table = async (
-  payer,
-  lookupTableAddress,
-  toAccount,
-  connection
-) => {
-  const extendInstruction = AddressLookupTableProgram.extendLookupTable({
-    payer: payer.publicKey,
-    authority: payer.publicKey,
-    lookupTable: lookupTableAddress,
-    addresses: [payer.publicKey, SystemProgram.programId, toAccount.publicKey],
-  });
-
-  let lastestBlockHash = await connection
-    .getLatestBlockhash()
-    .then((res) => res.blockhash);
-
-  const extensionMessageV0 = new TransactionMessage({
-    payerKey: payer.publicKey,
-    recentBlockhash: lastestBlockHash,
-    instructions: [extendInstruction],
-  }).compileToV0Message();
-
-  const extensionTransactionV0 = new VersionedTransaction(extensionMessageV0);
-  extensionTransactionV0.sign([payer]);
-  const tx = await connection.sendTransaction(extensionTransactionV0);
-
-  await connection.confirmTransaction({
-    blockhash: lastestBlockHash.blockhash,
-    signature: tx,
-  });
 };
 
 const fetch_ALUT = async (lookupTableAddress, connection) => {
@@ -156,11 +130,11 @@ const transfer = async (
     instructions,
   }).compileToV0Message([lookupTableAccount]);
 
-  console.log(instructions[0].keys);
-  console.log(messageV0);
-  console.log(messageV0.addressTableLookups[0].writableIndexes);
-  console.log(messageV0.compiledInstructions[0].accountKeyIndexes);
-  console.log(lookupTableAccount);
+  // console.log(instructions[0].keys);
+  // console.log(messageV0);
+  // console.log(messageV0.addressTableLookups[0].writableIndexes);
+  // console.log(messageV0.compiledInstructions[0].accountKeyIndexes);
+  // console.log(lookupTableAccount);
 
   // make a versioned transaction
   const transactionV0 = new VersionedTransaction(messageV0);
@@ -174,12 +148,20 @@ const transfer = async (
 };
 
 const main = async () => {
-  const { connection, slot, lastestBlockHash, payer, toAccount, minRent } =
-    await intitialize();
-  const { lookupTableAddress } = await creat_ALUT(payer, slot, connection);
-  // ---------------------------------------------------------------------------
+  const { connection, slot, payer, toAccount, minRent } = await intitialize();
   // add addresses to the `lookupTableAddress` table via an `extend` instruction
-  await extend_lookup_table(payer, lookupTableAddress, toAccount, connection);
+
+  console.log(
+    "pre-transfer: " + (await connection.getBalance(payer.publicKey))
+  );
+  console.log("minRent: " + minRent);
+  const { lookupTableAddress } = await creat_extend_ALUT(
+    payer,
+    toAccount,
+    slot,
+    connection
+  );
+  // ---------------------------------------------------------------------------
 
   const { lookupTableAccount } = await fetch_ALUT(
     lookupTableAddress,
@@ -187,6 +169,9 @@ const main = async () => {
   );
 
   await transfer(minRent, payer, toAccount, lookupTableAccount, connection);
+  console.log(
+    "after-transfer: " + (await connection.getBalance(payer.publicKey))
+  );
 };
 
 main();
